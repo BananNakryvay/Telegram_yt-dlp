@@ -5,6 +5,7 @@ import os
 import math
 from yt_dlp import download_range_func
 from requests import get
+import urllib.parse as parseurl
 
 #get public IP
 ip = get('https://api.ipify.org').content.decode('utf8')
@@ -133,7 +134,7 @@ def download_video(message, url, best_audio_id=None, start=None, end=None):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(url, download=True)
-            video_file_path = parse_text(ip + '/files/' +  ydl.prepare_filename(info_dict).replace('\\','/'))
+            video_file_path = parse_text(ip + ':5000/files/' +  parseurl.quote(ydl.prepare_filename(info_dict).replace('\\','/')))
             title = parse_text(info_dict['title'])
             bot.send_message(message.chat.id, f'[{title}]({video_file_path})', parse_mode='MarkdownV2')
     except Exception as e:
