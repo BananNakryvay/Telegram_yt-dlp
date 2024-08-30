@@ -104,6 +104,7 @@ def handle_message(message):
             f"{resolution} - {details['filesize']} ID:{details['id']}"
             for  resolution, details in video_options.items()
         ]
+        list_of_formats.append("MP3") # Add MP3 option to the list
 
         if timestamp or timestop:
             markup = telebot.types.ReplyKeyboardMarkup(one_time_keyboard=True, row_width=2, resize_keyboard=True)
@@ -129,47 +130,75 @@ def stampcheck(msg, url, best_audio_id, timestamp, timestop, list_of_formats, vi
 
 def download_video(message, url, best_audio_id=None, start=None, end=None):
     resolution = message.text
-    format_id = resolution.split("ID:")[-1]
-    format_str = f'{format_id}+{best_audio_id}' if best_audio_id else format_id
 
-    # Generate a random 8-character ID
-    random_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+    if resolution == "MP3":
+        # Download only audio
+        format_id = "bestaudio"
+        output_filename = f"{random.randint(1, 10000)}.mp3"
+        output_path = os.path.join(DOWNLOAD_PATH, output_filename)
+        ydl_opts = {
+            'format': format_id,
+            'outtmpl': output_path,
+            'socket_timeout': 30,
+        }
 
-    # Create the output filename
-    output_filename = f"{random_id}.mkv"
-    output_path = os.path.join(DOWNLOAD_PATH, output_filename)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(url, download=True)
+                video_file_path = parse_text(ip + f':{SERVER_PORT}/files/{output_filename}')
+                title = parse_text(info_dict['title'])
 
-    ydl_opts = {
-        'format': format_str,
-        'outtmpl': output_path,
-        'socket_timeout': 30,
-        **({
-            'verbose': True,
-            'download_ranges': download_range_func(None, [(float(start or 0), float(end or -1))]),
-            'force_keyframes_at_cuts': True
-        } if start or end else {})
-    }
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(url, download=True)
-            video_file_path = parse_text(ip + f':{SERVER_PORT}/files/{output_filename}')
-            title = parse_text(info_dict['title'])
-
-            # Check the file size and send either video or link
-            file_size = os.path.getsize(output_path)
-            if file_size < 50 * 1024 * 1024: # 50 MB
-                with open(output_path, 'rb') as video:
-                    # Send the video as a file
-                    bot.send_video(message.chat.id, video)
-            else:
-                # Send the link if the file size is larger
+                # Send the link for MP3
                 bot.send_message(message.chat.id, f'[{title}]({video_file_path})', parse_mode='MarkdownV2')
 
-            # Schedule file deletion after 90 seconds
-            Timer(90, lambda: delete_file(output_path)).start()
-    except Exception as e:
-        bot.reply_to(message, f"Failed to download video: {e}")
+                # Schedule file deletion after 90 seconds
+                Timer(90, lambda: delete_file(output_path)).start()
+        except Exception as e:
+            bot.reply_to(message, f"Failed to download MP3: {e}")
+
+    else:
+        # Download video with specified format
+        format_id = resolution.split("ID:")[-1]
+        format_str = f'{format_id}+{best_audio_id}' if best_audio_id else format_id
+
+        # Generate a random 8-character ID
+        random_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+
+        # Create the output filename
+        output_filename = f"{random_id}.mkv"
+        output_path = os.path.join(DOWNLOAD_PATH, output_filename)
+
+        ydl_opts = {
+            'format': format_str,
+            'outtmpl': output_path,
+            'socket_timeout': 30,
+            **({
+                'verbose': True,
+                'download_ranges': download_range_func(None, [(float(start or 0), float(end or -1))]),
+                'force_keyframes_at_cuts': True
+            } if start or end else {})
+        }
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(url, download=True)
+                video_file_path = parse_text(ip + f':{SERVER_PORT}/files/{output_filename}')
+                title = parse_text(info_dict['title'])
+
+                # Check the file size and send either video or link
+                file_size = os.path.getsize(output_path)
+                if file_size < 50 * 1024 * 1024: # 50 MB
+                    with open(output_path, 'rb') as video:
+                        # Send the video as a file
+                        bot.send_video(message.chat.id, video)
+                else:
+                    # Send the link if the file size is larger
+                    bot.send_message(message.chat.id, f'[{title}]({video_file_path})', parse_mode='MarkdownV2')
+
+                # Schedule file deletion after 90 seconds
+                Timer(90, lambda: delete_file(output_path)).start()
+        except Exception as e:
+            bot.reply_to(message, f"Failed to download video: {e}")
 
 def parse_text(text):
     """Escape special characters in text for MarkdownV2."""
@@ -204,7 +233,7 @@ def delete_file(file_path):
 # Flask route to serve files
 @app.route('/files/<path:filename>')
 def serve_file(filename):
-    return send_from_directory(DOWNLOAD_PATH, filename)
+    return send_from_directory(DOWNLOAD_PATH, filename, as_attachment=True) # Add as_attachment=True
 
 # Run the Flask server
 def run_server():
