@@ -6,6 +6,11 @@ import math
 from yt_dlp import download_range_func
 from requests import get
 import urllib.parse as parseurl
+import random
+import string
+from threading import Timer
+from flask import Flask, send_from_directory
+from flask import request
 
 #get public IP
 ip = get('https://api.ipify.org').content.decode('utf8')
@@ -15,8 +20,14 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # Path to save the downloaded videos
 DOWNLOAD_PATH = './downloads/'
 
+# Port for the file server
+SERVER_PORT = 5000
+
 # Ensure the download path exists
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
+
+# Create Flask app for file serving
+app = Flask(__name__, static_folder=DOWNLOAD_PATH)
 
 def get_video_info(url):
     """Fetch video information using yt_dlp."""
@@ -120,9 +131,17 @@ def download_video(message, url, best_audio_id=None, start=None, end=None):
     resolution = message.text
     format_id = resolution.split("ID:")[-1]
     format_str = f'{format_id}+{best_audio_id}' if best_audio_id else format_id
+
+    # Generate a random 8-character ID
+    random_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+
+    # Create the output filename
+    output_filename = f"{random_id}.mkv"
+    output_path = os.path.join(DOWNLOAD_PATH, output_filename)
+
     ydl_opts = {
         'format': format_str,
-        'outtmpl': os.path.join(DOWNLOAD_PATH, '%(format_id)s', str(start or ''),  str(end or ''), '%(title)s.%(ext)s'),
+        'outtmpl': output_path,
         'socket_timeout': 30,
         **({
             'verbose': True,
@@ -134,9 +153,21 @@ def download_video(message, url, best_audio_id=None, start=None, end=None):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(url, download=True)
-            video_file_path = parse_text(ip + ':5000/files/' +  parseurl.quote(ydl.prepare_filename(info_dict).replace('\\','/')))
+            video_file_path = parse_text(ip + f':{SERVER_PORT}/files/{output_filename}')
             title = parse_text(info_dict['title'])
-            bot.send_message(message.chat.id, f'[{title}]({video_file_path})', parse_mode='MarkdownV2')
+
+            # Check the file size and send either video or link
+            file_size = os.path.getsize(output_path)
+            if file_size < 50 * 1024 * 1024: # 50 MB
+                with open(output_path, 'rb') as video:
+                    # Send the video as a file
+                    bot.send_video(message.chat.id, video)
+            else:
+                # Send the link if the file size is larger
+                bot.send_message(message.chat.id, f'[{title}]({video_file_path})', parse_mode='MarkdownV2')
+
+            # Schedule file deletion after 90 seconds
+            Timer(90, lambda: delete_file(output_path)).start()
     except Exception as e:
         bot.reply_to(message, f"Failed to download video: {e}")
 
@@ -162,5 +193,27 @@ def time_to_seconds(time_str):
     seconds = int(match.group('seconds') or 0)
     return hours * 3600 + minutes * 60 + seconds
 
-# Start polling
+def delete_file(file_path):
+    """Delete a file after a certain time."""
+    try:
+        os.remove(file_path)
+        print(f"File deleted: {file_path}")
+    except FileNotFoundError:
+        print(f"File not found: {file_path}")
+
+# Flask route to serve files
+@app.route('/files/<path:filename>')
+def serve_file(filename):
+    return send_from_directory(DOWNLOAD_PATH, filename)
+
+# Run the Flask server
+def run_server():
+    app.run(host='0.0.0.0', port=SERVER_PORT, debug=False)
+
+# Start the Flask server in a separate thread
+from threading import Thread
+server_thread = Thread(target=run_server)
+server_thread.start()
+
+# Start polling for Telegram messages
 bot.polling()
