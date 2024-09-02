@@ -48,7 +48,7 @@ def filter_filesize_per_resolution(formats):
     """Filter and return video formats with approximate file sizes."""
     resolutions = {}
     for fmt in formats:
-        if fmt.get('vcodec') != 'none':  # Only consider video formats
+        if fmt.get('vcodec') != 'none' and fmt.get('ext') == 'mp4':  # Only consider video formats mp4
             resolution = fmt.get('format_note')
             filesize = fmt.get('filesize_approx') or 0
             if resolution and filesize > 0 and resolution not in resolutions:
@@ -99,7 +99,7 @@ def handle_message(message):
         info_dict = get_video_info(url)
         formats = info_dict.get('formats', [])
         video_options = filter_filesize_per_resolution(formats)
-        best_audio_id = "bestaudio"
+        best_audio_id = "ba[ext=m4a]"
         list_of_formats = [
             f"{resolution} - {details['filesize']} ID:{details['id']}"
             for  resolution, details in video_options.items()
@@ -131,10 +131,10 @@ def stampcheck(msg, url, best_audio_id, timestamp, timestop, list_of_formats, vi
 def download_video(message, url, best_audio_id=None, start=None, end=None):
     resolution = message.text
     is_audio_only = resolution == "MP3"
-    format_id = "bestaudio" if is_audio_only else resolution.split("ID:")[-1]
+    format_id = best_audio_id if is_audio_only else resolution.split("ID:")[-1]
     format_str = format_id if is_audio_only or not best_audio_id else f'{format_id}+{best_audio_id}'
-    extension = 'mp3' if is_audio_only else 'mkv'
-    output_path = os.path.join(DOWNLOAD_PATH, f'%(format_id)s{str(start or "")}{str(end or "")}%(id)s.{extension}')
+    extension = '.mp3' if is_audio_only else '.%(ext)s'
+    output_path = os.path.join(DOWNLOAD_PATH, f'%(title)s[%(format_id)s{str(start or "")}{str(end or "")}%(id)s]{extension}')
 
     ydl_opts = {
         'format': format_str,
@@ -204,7 +204,7 @@ def delete_file(file_path):
 # Flask route to serve files
 @app.route('/files/<path:filename>')
 def serve_file(filename):
-    return send_from_directory(DOWNLOAD_PATH, filename, as_attachment=True) # Add as_attachment=True
+    return send_from_directory("./", filename, as_attachment=True) # Add as_attachment=True
 
 # Run the Flask server
 def run_server():
