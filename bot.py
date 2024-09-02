@@ -9,7 +9,7 @@ import urllib.parse as parseurl
 import random
 import string
 from threading import Timer
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, abort
 from flask import request
 
 #get public IP
@@ -134,7 +134,7 @@ def download_video(message, url, best_audio_id=None, start=None, end=None):
     format_id = best_audio_id if is_audio_only else resolution.split("ID:")[-1]
     format_str = format_id if is_audio_only or not best_audio_id else f'{format_id}+{best_audio_id}'
     extension = '.mp3' if is_audio_only else '.%(ext)s'
-    output_path = os.path.join(DOWNLOAD_PATH, f'%(title)s[%(format_id)s{str(start or "")}{str(end or "")}%(id)s]{extension}')
+    output_path = os.path.join(DOWNLOAD_PATH,f'%(format_id)s%(id)s{str(start or "")}{str(end or "")}', f'%(title)s{extension}')
 
     ydl_opts = {
         'format': format_str,
@@ -153,8 +153,9 @@ def download_video(message, url, best_audio_id=None, start=None, end=None):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(url, download=True)
             output_filename = ydl.prepare_filename(info_dict).replace('\\', '/')
-            video_file_path = parse_text(f"{ip}:{SERVER_PORT}/files/{output_filename}")
-            title = parse_text(info_dict['title'])
+            video_folder = output_filename.split('/')[1]
+            video_file_path = f"{ip}:{SERVER_PORT}/files/{video_folder}"
+            title = info_dict['title']
 
             file_size = os.path.getsize(output_filename)
             if file_size < 50 * 1024 * 1024:  # 50 MB
@@ -164,7 +165,7 @@ def download_video(message, url, best_audio_id=None, start=None, end=None):
                     else:
                         bot.send_video(message.chat.id, video=media_file, caption=title,  supports_streaming=True)
 
-                bot.send_message(message.chat.id, f'[{title}]({video_file_path})', parse_mode='MarkdownV2')
+            bot.send_message(message.chat.id, text = f"<a href='{video_file_path}'>{title}</a>", parse_mode ="HTML")
 
             Timer(90, lambda: delete_file(output_filename)).start()
     except Exception as e:
@@ -202,9 +203,24 @@ def delete_file(file_path):
         print(f"File not found: {file_path}")
 
 # Flask route to serve files
-@app.route('/files/<path:filename>')
-def serve_file(filename):
-    return send_from_directory("./", filename, as_attachment=True) # Add as_attachment=True
+@app.route('/files/<path:folder>')
+def serve_file(folder):
+    directory = os.path.join(DOWNLOAD_PATH, folder)
+    try:
+        # List all files in the directory
+        files = os.listdir(directory)
+
+        # If the directory is empty or no files found, raise 404
+        if not files:
+            abort(404)
+
+        # Assuming you want to serve the first file found
+        filename = files[0]
+
+        # Send the file from the specified directory
+        return send_from_directory(directory, filename)
+    except FileNotFoundError:
+        abort(404)
 
 # Run the Flask server
 def run_server():
