@@ -9,7 +9,7 @@ import urllib.parse as parseurl
 import random
 import string
 from threading import Timer
-from flask import Flask, send_from_directory
+from flask import Flask, send_from_directory, abort
 from flask import request
 
 #get public IP
@@ -48,7 +48,7 @@ def filter_filesize_per_resolution(formats):
     """Filter and return video formats with approximate file sizes."""
     resolutions = {}
     for fmt in formats:
-        if fmt.get('vcodec') != 'none':  # Only consider video formats
+        if fmt.get('vcodec') != 'none' and fmt.get('ext') == 'mp4':  # Only consider video formats mp4
             resolution = fmt.get('format_note')
             filesize = fmt.get('filesize_approx') or 0
             if resolution and filesize > 0 and resolution not in resolutions:
@@ -99,7 +99,7 @@ def handle_message(message):
         info_dict = get_video_info(url)
         formats = info_dict.get('formats', [])
         video_options = filter_filesize_per_resolution(formats)
-        best_audio_id = "bestaudio"
+        best_audio_id = "ba[ext=m4a]"
         list_of_formats = [
             f"{resolution} - {details['filesize']} ID:{details['id']}"
             for  resolution, details in video_options.items()
@@ -130,75 +130,47 @@ def stampcheck(msg, url, best_audio_id, timestamp, timestop, list_of_formats, vi
 
 def download_video(message, url, best_audio_id=None, start=None, end=None):
     resolution = message.text
+    is_audio_only = resolution == "MP3"
+    format_id = best_audio_id if is_audio_only else resolution.split("ID:")[-1]
+    format_str = format_id if is_audio_only or not best_audio_id else f'{format_id}+{best_audio_id}'
+    extension = '.mp3' if is_audio_only else '.%(ext)s'
+    output_path = os.path.join(DOWNLOAD_PATH,f'%(format_id)s%(id)s{str(start or "")}{str(end or "")}', f'%(title)s{extension}')
 
-    if resolution == "MP3":
-        # Download only audio
-        format_id = "bestaudio"
-        output_filename = f"{random.randint(1, 10000)}.mp3"
-        output_path = os.path.join(DOWNLOAD_PATH, output_filename)
-        ydl_opts = {
-            'format': format_id,
-            'outtmpl': output_path,
-            'socket_timeout': 30,
-        }
+    ydl_opts = {
+        'format': format_str,
+        'outtmpl': output_path,
+        'socket_timeout': 30,
+    }
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info_dict = ydl.extract_info(url, download=True)
-                video_file_path = parse_text(ip + f':{SERVER_PORT}/files/{output_filename}')
-                title = parse_text(info_dict['title'])
+    if start or end:
+        ydl_opts.update({
+            'verbose': True,
+            'download_ranges': download_range_func(None, [(float(start or 0), float(end or -1))]),
+            'force_keyframes_at_cuts': True
+        })
 
-                # Send the link for MP3
-                bot.send_message(message.chat.id, f'[{title}]({video_file_path})', parse_mode='MarkdownV2')
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(url, download=True)
+            output_filename = ydl.prepare_filename(info_dict).replace('\\', '/')
+            video_folder = output_filename.split('/')[1]
+            video_file_path = f"{ip}:{SERVER_PORT}/files/{video_folder}"
+            title = info_dict['title']
 
-                # Schedule file deletion after 90 seconds
-                Timer(90, lambda: delete_file(output_path)).start()
-        except Exception as e:
-            bot.reply_to(message, f"Failed to download MP3: {e}")
+            file_size = os.path.getsize(output_filename)
+            if file_size < 50 * 1024 * 1024:  # 50 MB
+                with open(output_filename, 'rb') as media_file:
+                    if is_audio_only:
+                        bot.send_audio(message.chat.id, audio=media_file, title=title)
+                    else:
+                        bot.send_video(message.chat.id, video=media_file, caption=title,  supports_streaming=True)
 
-    else:
-        # Download video with specified format
-        format_id = resolution.split("ID:")[-1]
-        format_str = f'{format_id}+{best_audio_id}' if best_audio_id else format_id
+            bot.send_message(message.chat.id, text = f"<a href='{video_file_path}'>{title}</a>", parse_mode ="HTML")
 
-        # Generate a random 8-character ID
-        random_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-
-        # Create the output filename
-        output_filename = f"{random_id}.mkv"
-        output_path = os.path.join(DOWNLOAD_PATH, output_filename)
-
-        ydl_opts = {
-            'format': format_str,
-            'outtmpl': output_path,
-            'socket_timeout': 30,
-            **({
-                'verbose': True,
-                'download_ranges': download_range_func(None, [(float(start or 0), float(end or -1))]),
-                'force_keyframes_at_cuts': True
-            } if start or end else {})
-        }
-
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info_dict = ydl.extract_info(url, download=True)
-                video_file_path = parse_text(ip + f':{SERVER_PORT}/files/{output_filename}')
-                title = parse_text(info_dict['title'])
-
-                # Check the file size and send either video or link
-                file_size = os.path.getsize(output_path)
-                if file_size < 50 * 1024 * 1024: # 50 MB
-                    with open(output_path, 'rb') as video:
-                        # Send the video as a file
-                        bot.send_video(message.chat.id, video)
-                else:
-                    # Send the link if the file size is larger
-                    bot.send_message(message.chat.id, f'[{title}]({video_file_path})', parse_mode='MarkdownV2')
-
-                # Schedule file deletion after 90 seconds
-                Timer(90, lambda: delete_file(output_path)).start()
-        except Exception as e:
-            bot.reply_to(message, f"Failed to download video: {e}")
+            Timer(90, lambda: delete_file(output_filename)).start()
+    except Exception as e:
+        media_type = "MP3" if is_audio_only else "video"
+        bot.reply_to(message, f"Failed to download {media_type}: {e}")
 
 def parse_text(text):
     """Escape special characters in text for MarkdownV2."""
@@ -231,9 +203,24 @@ def delete_file(file_path):
         print(f"File not found: {file_path}")
 
 # Flask route to serve files
-@app.route('/files/<path:filename>')
-def serve_file(filename):
-    return send_from_directory(DOWNLOAD_PATH, filename, as_attachment=True) # Add as_attachment=True
+@app.route('/files/<path:folder>')
+def serve_file(folder):
+    directory = os.path.join(DOWNLOAD_PATH, folder)
+    try:
+        # List all files in the directory
+        files = os.listdir(directory)
+
+        # If the directory is empty or no files found, raise 404
+        if not files:
+            abort(404)
+
+        # Assuming you want to serve the first file found
+        filename = files[0]
+
+        # Send the file from the specified directory
+        return send_from_directory(directory, filename)
+    except FileNotFoundError:
+        abort(404)
 
 # Run the Flask server
 def run_server():
